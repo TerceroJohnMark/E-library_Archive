@@ -1,0 +1,12 @@
+kind: wasmer.io/App.v0
+name: elib-frontend
+owner: '2320801'
+package: .
+app_id: da_nzrI7tJUPzjY
+annotations:
+  anybuild.run/config:
+    name: out
+    static_dir: public
+  anybuild.run/provider: staticfile
+  anybuild.run/version: 0.33.3
+  wasmer.io/version: 7.5.0

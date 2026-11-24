@@ -1,0 +1,1400 @@
+import React, { useState, useEffect, useCallback } from 'react';
+import {
+  BookOpen,
+  History,
+  Bookmark,
+  Download,
+  Sparkles,
+  Search,
+  Sun,
+  Moon,
+  Send,
+  User,
+  Info,
+  X,
+  LogOut,
+  Lock,
+  UserPlus,
+  CheckCircle2,
+  ChevronLeft,
+  ChevronRight,
+  ShieldCheck,
+  Trash2,
+  Plus
+} from 'lucide-react';
+
+const DEFAULT_API_BASE = ['localhost', '127.0.0.1'].includes(window.location.hostname)
+  ? 'http://localhost:5000/api'
+  : 'https://elibrary-backend.wasmer.app/api';
+const API_BASE = (
+  window.ELIBRARY_API_BASE ||
+  import.meta.env.VITE_API_BASE_URL ||
+  DEFAULT_API_BASE
+).replace(/\/$/, '');
+const BACKEND_ORIGIN = API_BASE.replace(/\/api$/, '');
+
+function createGuestSessionToken() {
+  return `guest_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
+}
+
+function resolveBookFileUrl(bookOrUrl) {
+  const rawUrl = typeof bookOrUrl === 'string' ? bookOrUrl : bookOrUrl?.file_url;
+  if (rawUrl && rawUrl.startsWith('/api/')) {
+    return `${BACKEND_ORIGIN}${rawUrl}`;
+  }
+  const bookId =
+    typeof bookOrUrl === 'object'
+      ? bookOrUrl?.id
+      : String(rawUrl || '').match(/\/books\/(\d+)/)?.[1];
+  return `${API_BASE}/books/${bookId}/file`;
+}
+
+function buildBookChapters(book) {
+  const title = book?.title || 'Untitled Book';
+  const author = book?.author || 'Unknown Author';
+  const category = book?.category || 'General Reference';
+  const description =
+    book?.description ||
+    `An original structured study and reference text covering ${category} concepts, workflows, and practical applications.`;
+
+  const trackNotes = {
+    'Computer Science': {
+      focus: 'algorithms, data structures, modularity, and clean system design',
+      scenario: 'designing a maintainable software module with clear interfaces, predictable time/space complexity, and unit-testable logic',
+      exercise: 'Trace edge cases (empty inputs, large volumes, and invalid states) and verify how each function behaves before optimizing.'
+    },
+    'Data Science': {
+      focus: 'data preparation, statistical reasoning, feature validation, and model evaluation',
+      scenario: 'building a repeatable data pipeline that cleans raw records, prevents train/test leakage, and evaluates error metrics',
+      exercise: 'Inspect missing values, outliers, and class/distribution balance, and document why each preprocessing step is justified.'
+    },
+    'Cybersecurity': {
+      focus: 'threat modeling, trust boundaries, least privilege, and defensive controls',
+      scenario: 'auditing an application workflow for input validation gaps, weak authentication or session handling, and unsafe defaults',
+      exercise: 'List entry points, assets, and potential misuse paths, then map each risk to a concrete preventive or detective control.'
+    },
+    'Web Development': {
+      focus: 'client-server architecture, responsive UI state, API contracts, and reliability',
+      scenario: 'structuring a full-stack web feature with clear loading/error states, resilient API requests, and accessible navigation',
+      exercise: 'Test slow network responses, malformed payloads, and keyboard/screen-reader flow across desktop and mobile viewports.'
+    },
+    'Analytics': {
+      focus: 'metric definitions, cohort comparisons, data storytelling, and decision support',
+      scenario: 'translating raw operational events into clear KPIs and visual comparisons that answer concrete business questions',
+      exercise: 'Verify numerator/denominator definitions and time windows so charts cannot mislead stakeholders.'
+    }
+  };
+
+  const track = trackNotes[category] || {
+    focus: 'foundational concepts, key terminology, and structured problem-solving',
+    scenario: 'applying core reference principles to a real-world task or study project',
+    exercise: 'Summarize the main ideas in your own words and list two practical ways to apply them this week.'
+  };
+
+  return [
+    {
+      number: 1,
+      title: 'Foundations & Scope',
+      paragraphs: [
+        `Welcome to "${title}" by ${author}. Prepared for the ${category} collection in Archive, this chapter establishes the core context, vocabulary, and scope of the subject.`,
+        description,
+        `Rather than treating theory in isolation, strong practice starts by clarifying what problem is being solved, who the end user is, and what constraints shape the solution.`
+      ]
+    },
+    {
+      number: 2,
+      title: 'Core Principles & Architecture',
+      paragraphs: [
+        `This chapter explores the central pillars of ${category}, focusing on ${track.focus}.`,
+        `Well-structured systems separate responsibilities clearly so individual components can be understood, debugged, and updated without unintended side effects.`,
+        `When evaluating design options, balance clarity and correctness first, keep interfaces explicit, and document assumptions where trade-offs occur.`
+      ]
+    },
+    {
+      number: 3,
+      title: 'Applied Walkthrough & Case Study',
+      paragraphs: [
+        `In practice, applying "${title}" means moving from abstract concepts to a repeatable workflow—such as ${track.scenario}.`,
+        `Break complex tasks into small, verifiable milestones: start with a minimal working baseline, validate inputs and outputs at each boundary, and refine edge-case handling.`,
+        `Clear logging, readable structure, and consistent naming make collaborative maintenance and future troubleshooting significantly faster.`
+      ]
+    },
+    {
+      number: 4,
+      title: 'Summary & Study Exercises',
+      paragraphs: [
+        `"${title}" (${category}) by ${author} emphasizes disciplined engineering and analytical habits from initial problem framing through verification.`,
+        `Study Exercise: ${track.exercise}`,
+        `Key Takeaway: Reliable results come from verifying assumptions early, testing realistic failure modes, and keeping notes clear for future reference.`
+      ]
+    }
+  ];
+}
+
+function escapePdfText(text) {
+  return String(text || '')
+    .replace(/[^\x20-\x7E]/g, ' ')
+    .replace(/\\/g, '\\\\')
+    .replace(/\(/g, '\\(')
+    .replace(/\)/g, '\\)');
+}
+
+function wrapPdfLines(text, maxChars = 76) {
+  const words = String(text || '').split(/\s+/).filter(Boolean);
+  const lines = [];
+  let current = '';
+
+  for (const word of words) {
+    if ((current + ' ' + word).trim().length <= maxChars) {
+      current = (current + ' ' + word).trim();
+    } else {
+      if (current) lines.push(current);
+      current = word;
+    }
+  }
+  if (current) lines.push(current);
+  return lines;
+}
+
+function buildPdfPages(lines, linesPerPage = 46) {
+  const pages = [];
+  for (let i = 0; i < lines.length; i += linesPerPage) {
+    pages.push(lines.slice(i, i + linesPerPage));
+  }
+  return pages.length ? pages : [['ARCHIVE E-LIBRARY']];
+}
+
+function createLocalBookPdfBlob(book) {
+  const title = book?.title || 'Library Book';
+  const author = book?.author || 'Unknown Author';
+  const category = book?.category || 'General Reference';
+  const chapters = buildBookChapters(book);
+
+  const allLines = [
+    'ARCHIVE E-LIBRARY - MULTI-CHAPTER DIGITAL EDITION',
+    '====================================================================',
+    `Title    : ${title}`,
+    `Author   : ${author}`,
+    `Category : ${category}`,
+    `Book ID  : #${book?.id ?? 'N/A'}`,
+    '====================================================================',
+    ''
+  ];
+
+  for (const ch of chapters) {
+    allLines.push(`CHAPTER ${ch.number}: ${ch.title.toUpperCase()}`);
+    allLines.push('--------------------------------------------------------------------');
+    for (const para of ch.paragraphs) {
+      allLines.push(...wrapPdfLines(para, 76));
+      allLines.push('');
+    }
+  }
+
+  const pages = buildPdfPages(allLines, 46);
+  const pageCount = pages.length;
+  const fontObjNum = 3;
+  const pageObjNums = pages.map((_, idx) => 4 + idx * 2);
+  const objectsById = new Map();
+
+  objectsById.set(1, `1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n`);
+  objectsById.set(
+    2,
+    `2 0 obj\n<< /Type /Pages /Kids [${pageObjNums.map((n) => `${n} 0 R`).join(' ')}] /Count ${pageCount} >>\nendobj\n`
+  );
+  objectsById.set(
+    fontObjNum,
+    `${fontObjNum} 0 obj\n<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>\nendobj\n`
+  );
+
+  const encoder = new TextEncoder();
+
+  pages.forEach((pageLines, idx) => {
+    const pageObjNum = 4 + idx * 2;
+    const contentObjNum = 5 + idx * 2;
+    const commands = ['BT', '/F1 10.5 Tf', '48 748 Td', '14 TL'];
+
+    pageLines.forEach((line, lineIdx) => {
+      const safe = escapePdfText(line);
+      commands.push(lineIdx === 0 ? `(${safe}) Tj` : `T* (${safe}) Tj`);
+    });
+    commands.push('ET');
+
+    const streamData = commands.join('\n');
+    const byteLen = encoder.encode(streamData).length;
+
+    objectsById.set(
+      pageObjNum,
+      `${pageObjNum} 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents ${contentObjNum} 0 R /Resources << /Font << /F1 ${fontObjNum} 0 R >> >> >>\nendobj\n`
+    );
+    objectsById.set(
+      contentObjNum,
+      `${contentObjNum} 0 obj\n<< /Length ${byteLen} >>\nstream\n${streamData}\nendstream\nendobj\n`
+    );
+  });
+
+  const totalObjects = 3 + pageCount * 2;
+  let pdf = '%PDF-1.4\n';
+  const offsets = new Array(totalObjects + 1).fill(0);
+
+  for (let objId = 1; objId <= totalObjects; objId++) {
+    offsets[objId] = encoder.encode(pdf).length;
+    pdf += objectsById.get(objId);
+  }
+
+  const xrefStart = encoder.encode(pdf).length;
+  pdf += `xref\n0 ${totalObjects + 1}\n`;
+  pdf += '0000000000 65535 f \n';
+  for (let objId = 1; objId <= totalObjects; objId++) {
+    pdf += `${String(offsets[objId]).padStart(10, '0')} 00000 n \n`;
+  }
+
+  pdf += `trailer\n<< /Size ${totalObjects + 1} /Root 1 0 R >>\nstartxref\n${xrefStart}\n%%EOF`;
+  return new Blob([pdf], { type: 'application/pdf' });
+}
+
+async function readApiResponse(response) {
+  const body = await response.text();
+  try {
+    return body ? JSON.parse(body) : {};
+  } catch {
+    throw new Error(`Server returned an invalid response (${response.status}).`);
+  }
+}
+
+const CATEGORIES = [
+  'All',
+  'Computer Science',
+  'Data Science',
+  'Cybersecurity',
+  'Web Development',
+  'Analytics'
+];
+
+export default function App() {
+  const [darkMode, setDarkMode] = useState(false);
+  const [activeTab, setActiveTab] = useState('books');
+  const [books, setBooks] = useState([]);
+  const [loading, setLoading] = useState(true);
+
+  const [searchQuery, setSearchQuery] = useState('');
+  const [selectedCategory, setSelectedCategory] = useState('All');
+  const [selectedBook, setSelectedBook] = useState(null);
+  const [readingBook, setReadingBook] = useState(null);
+  const [activeChapterIdx, setActiveChapterIdx] = useState(0);
+
+  const [token, setToken] = useState(() => localStorage.getItem('token') || '');
+  const [currentUser, setCurrentUser] = useState(() => {
+    try {
+      return JSON.parse(localStorage.getItem('user') || 'null');
+    } catch {
+      localStorage.removeItem('user');
+      return null;
+    }
+  });
+
+  const [showAuthModal, setShowAuthModal] = useState(false);
+  const [authMode, setAuthMode] = useState('login');
+  const [fullName, setFullName] = useState('');
+  const [authUsername, setAuthUsername] = useState('');
+  const [authPassword, setAuthPassword] = useState('');
+  const [authError, setAuthError] = useState('');
+  const [authLoading, setAuthLoading] = useState(false);
+
+  const isRegistered = Boolean(token && currentUser);
+  const isAdmin = Boolean(isRegistered && currentUser?.role === 'admin');
+  const maxDownloads = isRegistered ? 10 : 5;
+
+  const [guestToken, setGuestToken] = useState(() => {
+    const existing = sessionStorage.getItem('guestSessionToken');
+    if (existing) return existing;
+    const fresh = createGuestSessionToken();
+    sessionStorage.setItem('guestSessionToken', fresh);
+    return fresh;
+  });
+
+  const [guestDownloadCount, setGuestDownloadCount] = useState(() =>
+    Number(sessionStorage.getItem('guestDownloadCount') || 0)
+  );
+
+  const [guestDownloadedIds, setGuestDownloadedIds] = useState(() => {
+    try {
+      return JSON.parse(sessionStorage.getItem('guestDownloadedIds') || '[]');
+    } catch {
+      return [];
+    }
+  });
+
+  useEffect(() => {
+    sessionStorage.setItem('guestSessionToken', guestToken);
+    sessionStorage.setItem('guestDownloadCount', String(guestDownloadCount));
+    sessionStorage.setItem('guestDownloadedIds', JSON.stringify(guestDownloadedIds));
+  }, [guestToken, guestDownloadCount, guestDownloadedIds]);
+
+  const [recentIds, setRecentIds] = useState(() => JSON.parse(localStorage.getItem('recentBooks') || '[]'));
+  const [savedIds, setSavedIds] = useState(() => JSON.parse(localStorage.getItem('savedBooks') || '[]'));
+
+  const userHistoryKey = currentUser?.id ? `userDownloadedBooks_${currentUser.id}` : null;
+  const [userDownloadedIds, setUserDownloadedIds] = useState(() => {
+    try {
+      const savedUser = JSON.parse(localStorage.getItem('user') || 'null');
+      if (!savedUser?.id) return [];
+      return JSON.parse(localStorage.getItem(`userDownloadedBooks_${savedUser.id}`) || '[]');
+    } catch {
+      return [];
+    }
+  });
+
+  useEffect(() => {
+    if (isRegistered && userHistoryKey) {
+      try {
+        setUserDownloadedIds(JSON.parse(localStorage.getItem(userHistoryKey) || '[]'));
+      } catch {
+        setUserDownloadedIds([]);
+      }
+    } else {
+      setUserDownloadedIds([]);
+    }
+  }, [isRegistered, userHistoryKey]);
+
+  useEffect(() => {
+    if (isRegistered && userHistoryKey) {
+      localStorage.setItem(userHistoryKey, JSON.stringify(userDownloadedIds));
+    }
+  }, [isRegistered, userHistoryKey, userDownloadedIds]);
+
+  const downloadedIds = isRegistered ? userDownloadedIds : guestDownloadedIds;
+  const currentCountDisplay = isRegistered
+    ? Number(currentUser?.download_count ?? 0)
+    : Number(guestDownloadCount || 0);
+
+  const [aiInput, setAiInput] = useState('');
+  const [aiMessages, setAiMessages] = useState([
+    {
+      sender: 'ai',
+      text: 'Hi! I am your embedded library agent. Ask me to search, compare, or recommend books—or ask me to save a book to My Library.'
+    }
+  ]);
+  const [aiLoading, setAiLoading] = useState(false);
+
+  const [adminStats, setAdminStats] = useState(null);
+  const [adminLoading, setAdminLoading] = useState(false);
+  const [newBookTitle, setNewBookTitle] = useState('');
+  const [newBookAuthor, setNewBookAuthor] = useState('');
+  const [newBookCategory, setNewBookCategory] = useState('Computer Science');
+  const [newBookDesc, setNewBookDesc] = useState('');
+  const [adminNotice, setAdminNotice] = useState('');
+
+  useEffect(() => {
+    document.documentElement.classList.toggle('dark', darkMode);
+  }, [darkMode]);
+
+  useEffect(() => {
+    localStorage.setItem('recentBooks', JSON.stringify(recentIds));
+    localStorage.setItem('savedBooks', JSON.stringify(savedIds));
+  }, [recentIds, savedIds]);
+
+  const recordBookView = useCallback(async (bookId) => {
+    if (!bookId) return;
+    try {
+      await fetch(`${API_BASE}/books/${bookId}/view`, { method: 'POST' });
+    } catch (err) {
+      console.error('Failed to record book view:', err);
+    }
+  }, []);
+
+  const handleOpenBookDetails = (book) => {
+    setSelectedBook(book);
+    recordBookView(book?.id);
+  };
+
+  const fetchBooksCatalog = useCallback(async () => {
+    setLoading(true);
+    try {
+      const params = new URLSearchParams();
+      if (searchQuery) params.append('search', searchQuery);
+      if (selectedCategory !== 'All') params.append('category', selectedCategory);
+
+      const res = await fetch(`${API_BASE}/books?${params.toString()}`);
+      const data = await readApiResponse(res);
+      if (!res.ok) throw new Error(data.error || 'Could not load books.');
+      setBooks(Array.isArray(data) ? data : []);
+    } catch (err) {
+      console.error('Failed to fetch books:', err);
+    } finally {
+      setLoading(false);
+    }
+  }, [searchQuery, selectedCategory]);
+
+  useEffect(() => {
+    const timer = setTimeout(fetchBooksCatalog, 250);
+    return () => clearTimeout(timer);
+  }, [fetchBooksCatalog]);
+
+  const loadAdminOverview = useCallback(async () => {
+    if (!token) return;
+    setAdminLoading(true);
+    setAdminNotice('');
+    try {
+      const res = await fetch(`${API_BASE}/admin/overview`, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      const data = await readApiResponse(res);
+      if (res.ok) {
+        setAdminStats(data);
+      } else {
+        setAdminNotice(data.error || `Could not load analytics (HTTP ${res.status}).`);
+      }
+    } catch (err) {
+      setAdminNotice(err.message || 'Could not reach backend for admin analytics.');
+    } finally {
+      setAdminLoading(false);
+    }
+  }, [token]);
+
+  useEffect(() => {
+    if (activeTab === 'admin' && isRegistered) {
+      loadAdminOverview();
+    }
+  }, [activeTab, isRegistered, loadAdminOverview]);
+
+  const openAuth = (mode = 'login') => {
+    setAuthMode(mode);
+    setAuthError('');
+    setFullName('');
+    setAuthUsername('');
+    setAuthPassword('');
+    setShowAuthModal(true);
+  };
+
+  const handleAuthSubmit = async (e) => {
+    e.preventDefault();
+    setAuthError('');
+    setAuthLoading(true);
+
+    const endpoint = authMode === 'login' ? '/login' : '/register';
+    const payload = authMode === 'login'
+      ? { username: authUsername.trim(), password: authPassword }
+      : { fullName: fullName.trim(), username: authUsername.trim(), password: authPassword };
+
+    try {
+      const res = await fetch(`${API_BASE}${endpoint}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+      const data = await readApiResponse(res);
+
+      if (res.ok) {
+        setUserDownloadedIds([]);
+        setToken(data.token);
+        setCurrentUser(data.user);
+        localStorage.setItem('token', data.token);
+        localStorage.setItem('user', JSON.stringify(data.user));
+
+        const nextHistory = JSON.parse(
+          localStorage.getItem(`userDownloadedBooks_${data.user.id}`) || '[]'
+        );
+        setUserDownloadedIds(nextHistory);
+        setShowAuthModal(false);
+      } else {
+        setAuthError(data.error || 'Authentication failed.');
+      }
+    } catch (err) {
+      setAuthError(err.message || 'Could not connect to backend.');
+    } finally {
+      setAuthLoading(false);
+    }
+  };
+
+  const handleLogout = async () => {
+    const currentToken = token;
+    setToken('');
+    setCurrentUser(null);
+    setUserDownloadedIds([]);
+    setAdminStats(null);
+    if (activeTab === 'admin') setActiveTab('books');
+    localStorage.removeItem('token');
+    localStorage.removeItem('user');
+
+    if (currentToken) {
+      try {
+        await fetch(`${API_BASE}/logout`, {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${currentToken}` }
+        });
+      } catch {
+        // Ignore network errors during logout
+      }
+    }
+
+    const freshGuestToken = createGuestSessionToken();
+    setGuestToken(freshGuestToken);
+    setGuestDownloadCount(0);
+    setGuestDownloadedIds([]);
+    sessionStorage.setItem('guestSessionToken', freshGuestToken);
+    sessionStorage.setItem('guestDownloadCount', '0');
+    sessionStorage.setItem('guestDownloadedIds', '[]');
+  };
+
+  useEffect(() => {
+    if (!token) return;
+
+    let cancelled = false;
+    const refreshAccountAndLibrary = async () => {
+      try {
+        const [meRes, libRes] = await Promise.all([
+          fetch(`${API_BASE}/me`, { headers: { Authorization: `Bearer ${token}` } }),
+          fetch(`${API_BASE}/library`, { headers: { Authorization: `Bearer ${token}` } })
+        ]);
+        const meData = await readApiResponse(meRes);
+        if (!meRes.ok) {
+          if (meRes.status === 401 && !cancelled) handleLogout();
+          return;
+        }
+        if (!cancelled && meData.user) {
+          const refreshedUser = {
+            ...meData.user,
+            download_count: Number(meData.user.download_count ?? 0)
+          };
+          setCurrentUser(refreshedUser);
+          localStorage.setItem('user', JSON.stringify(refreshedUser));
+        }
+
+        if (libRes.ok) {
+          const libData = await readApiResponse(libRes);
+          if (!cancelled && Array.isArray(libData.bookIds)) {
+            setSavedIds(libData.bookIds);
+          }
+        }
+      } catch (err) {
+        console.error('Could not refresh account or library:', err);
+      }
+    };
+
+    refreshAccountAndLibrary();
+    return () => { cancelled = true; };
+  }, [token]);
+
+  const handleReadBook = (book) => {
+    setRecentIds((prev) => [book.id, ...prev.filter((id) => id !== book.id)].slice(0, 20));
+    recordBookView(book?.id);
+    setActiveChapterIdx(0);
+    setReadingBook(book);
+  };
+
+  const handleToggleSave = async (bookId) => {
+    const alreadySaved = savedIds.includes(bookId);
+    setSavedIds((prev) =>
+      alreadySaved ? prev.filter((id) => id !== bookId) : [bookId, ...prev]
+    );
+
+    if (!isRegistered || !token) return;
+
+    try {
+      const res = await fetch(
+        alreadySaved ? `${API_BASE}/library/${bookId}` : `${API_BASE}/library`,
+        {
+          method: alreadySaved ? 'DELETE' : 'POST',
+          headers: {
+            Authorization: `Bearer ${token}`,
+            ...(alreadySaved ? {} : { 'Content-Type': 'application/json' })
+          },
+          ...(alreadySaved ? {} : { body: JSON.stringify({ bookId }) })
+        }
+      );
+      const data = await readApiResponse(res);
+      if (res.ok && Array.isArray(data.bookIds)) {
+        setSavedIds(data.bookIds);
+      }
+    } catch (err) {
+      console.error('Library sync failed:', err);
+    }
+  };
+
+  const handleConfirmAiSave = async (book, msgIndex) => {
+    if (!book?.id) return;
+    if (!savedIds.includes(book.id)) {
+      await handleToggleSave(book.id);
+    }
+    setAiMessages((prev) =>
+      prev.map((m, idx) =>
+        idx === msgIndex
+          ? {
+              ...m,
+              pendingSaveBook: null,
+              text: `${m.text} Saved "${book.title}" to My Library.`
+            }
+          : m
+      )
+    );
+  };
+
+  const handleDownloadBook = async (book) => {
+    const registeredAtStart = Boolean(token && currentUser);
+    const memberCount = Number(currentUser?.download_count ?? 0);
+    const guestCount = Number(guestDownloadCount || 0);
+
+    if (!registeredAtStart && guestCount >= 5) {
+      alert('Guest download limit reached (5 books max per session). Log in or sign up to download up to 10 books.');
+      return;
+    }
+
+    if (registeredAtStart && memberCount >= 10) {
+      alert('Member download limit reached (10 books max per account).');
+      return;
+    }
+
+    try {
+      const headers = registeredAtStart
+        ? { Authorization: `Bearer ${token}` }
+        : { 'x-guest-token': guestToken };
+
+      const response = await fetch(`${API_BASE}/books/${book.id}/download`, {
+        method: 'POST',
+        headers
+      });
+      const data = await readApiResponse(response);
+      const serverCount = Number(data.download_count);
+
+      if (Number.isFinite(serverCount)) {
+        if (registeredAtStart) {
+          setCurrentUser((previousUser) => {
+            if (!previousUser) return previousUser;
+            const updatedUser = { ...previousUser, download_count: serverCount };
+            localStorage.setItem('user', JSON.stringify(updatedUser));
+            return updatedUser;
+          });
+        } else {
+          setGuestDownloadCount(serverCount);
+          sessionStorage.setItem('guestDownloadCount', String(serverCount));
+        }
+      }
+
+      if (!response.ok) {
+        if (response.status === 401 && registeredAtStart) {
+          handleLogout();
+        }
+        alert(data.error || 'Download failed.');
+        return;
+      }
+
+      const fileUrl = resolveBookFileUrl(data.file_url || book);
+      let blob;
+      try {
+        const fileResponse = await fetch(fileUrl, { headers });
+        if (!fileResponse.ok) {
+          throw new Error(`File request failed (${fileResponse.status}).`);
+        }
+        blob = await fileResponse.blob();
+      } catch (fileError) {
+        console.error('Hosted PDF request failed; using local multi-chapter PDF fallback:', fileError);
+        blob = createLocalBookPdfBlob(data.book || book);
+      }
+
+      const objectUrl = URL.createObjectURL(blob);
+      const safeTitle = `${(book.title || `book_${book.id}`)
+        .replace(/[^a-z0-9]+/gi, '_')
+        .replace(/^_+|_+$/g, '')
+        .toLowerCase()}.pdf`;
+
+      const link = document.createElement('a');
+      link.href = objectUrl;
+      link.download = safeTitle;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      window.setTimeout(() => URL.revokeObjectURL(objectUrl), 1000);
+
+      if (registeredAtStart) {
+        setUserDownloadedIds((previous) => (
+          previous.includes(book.id) ? previous : [book.id, ...previous]
+        ));
+      } else {
+        setGuestDownloadedIds((previous) => (
+          previous.includes(book.id) ? previous : [book.id, ...previous]
+        ));
+      }
+
+      setRecentIds((previous) => [book.id, ...previous.filter((id) => id !== book.id)].slice(0, 20));
+    } catch (err) {
+      console.error('Book download failed:', err);
+      alert(err.message || 'Network error while starting download.');
+    }
+  };
+
+  const handleSendAi = async (e) => {
+    e.preventDefault();
+    if (!aiInput.trim()) return;
+    const userMsg = aiInput.trim();
+    const nextHistory = [...aiMessages, { sender: 'user', text: userMsg }];
+    setAiMessages(nextHistory);
+    setAiInput('');
+    setAiLoading(true);
+
+    try {
+      const res = await fetch(`${API_BASE}/ai/chat`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ message: userMsg, history: nextHistory })
+      });
+      const data = await readApiResponse(res);
+      setAiMessages((prev) => [
+        ...prev,
+        {
+          sender: 'ai',
+          text: data.reply,
+          books: data.data,
+          toolsUsed: data.toolsUsed,
+          pendingSaveBook: data.pendingSaveBook || null
+        }
+      ]);
+    } catch (err) {
+      setAiMessages((prev) => [...prev, { sender: 'ai', text: 'Could not reach AI server.' }]);
+    } finally {
+      setAiLoading(false);
+    }
+  };
+
+  const handleAdminAddBook = async (e) => {
+    e.preventDefault();
+    setAdminNotice('');
+    if (!newBookTitle.trim() || !newBookAuthor.trim()) return;
+
+    try {
+      const res = await fetch(`${API_BASE}/admin/books`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`
+        },
+        body: JSON.stringify({
+          title: newBookTitle.trim(),
+          author: newBookAuthor.trim(),
+          category: newBookCategory,
+          description: newBookDesc.trim()
+        })
+      });
+      const data = await readApiResponse(res);
+      if (!res.ok) {
+        setAdminNotice(data.error || 'Could not add book.');
+        return;
+      }
+      setNewBookTitle('');
+      setNewBookAuthor('');
+      setNewBookDesc('');
+      setAdminNotice(`Added "${data.title}" to catalog.`);
+      await Promise.all([fetchBooksCatalog(), loadAdminOverview()]);
+    } catch (err) {
+      setAdminNotice(err.message || 'Error adding book.');
+    }
+  };
+
+  const handleAdminDeleteBook = async (bookId) => {
+    setAdminNotice('');
+    try {
+      const res = await fetch(`${API_BASE}/admin/books/${bookId}`, {
+        method: 'DELETE',
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      const data = await readApiResponse(res);
+      if (!res.ok) {
+        setAdminNotice(data.error || 'Could not delete book.');
+        return;
+      }
+      setAdminNotice(`Deleted book #${bookId}.`);
+      await Promise.all([fetchBooksCatalog(), loadAdminOverview()]);
+    } catch (err) {
+      setAdminNotice(err.message || 'Error deleting book.');
+    }
+  };
+
+  const displayedBooks = books.filter((book) => {
+    if (activeTab === 'recent') return recentIds.includes(book.id);
+    if (activeTab === 'saved') return savedIds.includes(book.id);
+    if (activeTab === 'downloads') return downloadedIds.includes(book.id);
+    return true;
+  });
+
+  const navItems = [
+    { id: 'books', label: 'Books', icon: BookOpen },
+    { id: 'recent', label: 'Recent View', icon: History },
+    { id: 'saved', label: 'My Library', icon: Bookmark, badge: savedIds.length },
+    { id: 'downloads', label: 'Downloads', icon: Download, badge: downloadedIds.length },
+    { id: 'ai', label: 'AI Assistant', icon: Sparkles },
+    ...(isRegistered ? [{ id: 'admin', label: 'Admin', icon: ShieldCheck }] : [])
+  ];
+
+  const tabTitles = {
+    books: { title: 'E-Library Collection', sub: 'Over 200+ verified academic and technical reference books' },
+    recent: { title: 'Recent View', sub: 'Books you recently viewed or downloaded' },
+    saved: { title: 'My Library & Favorites', sub: isRegistered ? 'Synced with your account in PostgreSQL' : 'Saved in current session (sign in to sync across devices)' },
+    downloads: { title: 'My Downloads', sub: `Downloaded titles (${currentCountDisplay}/${maxDownloads} quota used)` },
+    ai: { title: 'Agentic AI Assistant', sub: 'Search, compare, recommend, and save books with confirmation' },
+    admin: { title: 'Administrator Dashboard', sub: 'Logged-in users, most-viewed, downloaded & saved books, and catalog management' }
+  };
+
+  const readerChapters = readingBook ? buildBookChapters(readingBook) : [];
+  const currentChapter = readerChapters[activeChapterIdx] || readerChapters[0];
+
+  return (
+    <div className="min-h-screen flex bg-[#F8F7FC] dark:bg-[#0F0E13] text-slate-900 dark:text-slate-100 transition-colors duration-200">
+      <aside className="w-60 shrink-0 bg-[#EFEFF5] dark:bg-[#16151D] border-r border-slate-200/80 dark:border-slate-800 flex flex-col justify-between p-5">
+        <div>
+          <div className="flex items-center gap-3 px-2 mb-8">
+            <div className="w-8 h-8 rounded-lg bg-[#5B46E8] flex items-center justify-center text-white">
+              <BookOpen className="w-4 h-4" />
+            </div>
+            <span className="text-xl font-bold tracking-tight">Archive</span>
+          </div>
+          <nav className="space-y-1.5">
+            {navItems.map((item) => {
+              const Icon = item.icon;
+              const isActive = activeTab === item.id;
+              return (
+                <button
+                  key={item.id}
+                  onClick={() => setActiveTab(item.id)}
+                  className={`w-full flex items-center justify-between px-3.5 py-2.5 rounded-xl text-sm font-medium transition-all ${
+                    isActive ? 'bg-[#E2DFF3] dark:bg-[#27233B] text-[#4C38D6] dark:text-[#A99BFF]' : 'text-slate-600 dark:text-slate-400 hover:bg-slate-200/60 dark:hover:bg-slate-800/60'
+                  }`}
+                >
+                  <span className="flex items-center gap-3.5">
+                    <Icon className="w-4 h-4" />
+                    <span>{item.label}</span>
+                  </span>
+                  {item.badge > 0 && (
+                    <span className="px-2 py-0.5 text-[10px] font-bold rounded-full bg-[#5B46E8] text-white">
+                      {item.badge}
+                    </span>
+                  )}
+                </button>
+              );
+            })}
+          </nav>
+        </div>
+        <div className="flex items-center gap-2 px-3 py-2 text-xs text-slate-400">
+          <Info className="w-3.5 h-3.5" />
+          <span>Archive v1.5</span>
+        </div>
+      </aside>
+
+      <div className="flex-1 flex flex-col min-w-0">
+        <header className="h-20 px-8 flex items-center justify-between gap-4 border-b border-slate-200/60 dark:border-slate-800/80">
+          <div className="relative w-full max-w-md">
+            <Search className="w-4 h-4 text-slate-400 absolute left-4 top-1/2 -translate-y-1/2" />
+            <input
+              type="text"
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              placeholder="Search 200+ books, authors, topics..."
+              className="w-full pl-11 pr-4 py-2.5 rounded-full bg-white dark:bg-[#1C1B24] border border-slate-200 dark:border-slate-800 text-sm focus:outline-none focus:ring-2 focus:ring-[#5B46E8]"
+            />
+          </div>
+
+          <div className="flex items-center gap-3 shrink-0">
+            <button
+              onClick={() => setActiveTab('downloads')}
+              className="flex items-center gap-2 px-3.5 py-1.5 rounded-full bg-[#EAE7F8] dark:bg-[#221F33] text-[#4C38D6] dark:text-[#B4A7FF] text-xs font-semibold hover:opacity-90"
+            >
+              <Download className="w-3.5 h-3.5" />
+              <span>
+                Downloads: {currentCountDisplay}/{maxDownloads}
+              </span>
+            </button>
+
+            <button
+              onClick={() => setDarkMode(!darkMode)}
+              className="flex items-center gap-1 p-1 rounded-full bg-slate-200/80 dark:bg-[#1F1E29] border border-slate-300/60 dark:border-slate-700"
+            >
+              <span className={`p-1.5 rounded-full ${!darkMode ? 'bg-white text-amber-500 shadow-sm' : 'text-slate-400'}`}>
+                <Sun className="w-3.5 h-3.5" />
+              </span>
+              <span className={`p-1.5 rounded-full ${darkMode ? 'bg-[#2D2B3B] text-indigo-300 shadow-sm' : 'text-slate-500'}`}>
+                <Moon className="w-3.5 h-3.5" />
+              </span>
+            </button>
+
+            {isRegistered ? (
+              <div className="flex items-center gap-2 bg-white dark:bg-[#1C1B24] border border-slate-200 dark:border-slate-800 px-3 py-1 rounded-full text-xs font-medium">
+                <div className="w-6 h-6 rounded-full bg-emerald-600 text-white flex items-center justify-center">
+                  <User className="w-3.5 h-3.5" />
+                </div>
+                <span className="max-w-[110px] truncate">{currentUser.name || currentUser.username}</span>
+                <button onClick={handleLogout} title="Log out" className="ml-1 text-slate-400 hover:text-red-500">
+                  <LogOut className="w-3.5 h-3.5" />
+                </button>
+              </div>
+            ) : (
+              <div className="flex items-center gap-2">
+                <button onClick={() => openAuth('login')} className="px-3.5 py-1.5 rounded-full border border-slate-300 dark:border-slate-700 text-xs font-semibold">
+                  Log In
+                </button>
+                <button onClick={() => openAuth('register')} className="flex items-center gap-1.5 px-4 py-1.5 rounded-full bg-[#5B46E8] text-white text-xs font-semibold">
+                  <UserPlus className="w-3.5 h-3.5" />
+                  <span>Sign Up</span>
+                </button>
+              </div>
+            )}
+          </div>
+        </header>
+
+        <main className="flex-1 p-8 overflow-y-auto">
+          <div className="mb-6">
+            <h1 className="text-2xl font-bold tracking-tight">{tabTitles[activeTab].title}</h1>
+            <p className="text-sm text-slate-500 dark:text-slate-400 mt-0.5">{tabTitles[activeTab].sub}</p>
+          </div>
+
+          {activeTab === 'admin' ? (
+            <div className="space-y-6 max-w-5xl">
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-xs text-slate-500">
+                  Signed in as <strong>{currentUser?.username}</strong> ({currentUser?.role})
+                </span>
+                <button
+                  type="button"
+                  onClick={loadAdminOverview}
+                  className="px-3.5 py-1.5 rounded-xl bg-[#5B46E8] text-white text-xs font-semibold"
+                >
+                  Refresh Analytics
+                </button>
+              </div>
+
+              {!isAdmin && (
+                <div className="p-4 rounded-2xl bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800 text-xs text-amber-800 dark:text-amber-200">
+                  Your account currently has role <strong>{currentUser?.role || 'member'}</strong>. Log in with <code>admin</code> (password <code>Admin@123</code>) or set <code>role = &apos;admin&apos;</code> on your user row in Supabase to view analytics and manage books.
+                </div>
+              )}
+
+              {adminNotice && (
+                <div className="p-3 rounded-xl bg-[#EAE7F8] dark:bg-[#27233B] text-xs font-medium text-[#4C38D6] dark:text-[#B4A7FF]">
+                  {adminNotice}
+                </div>
+              )}
+
+              {adminLoading ? (
+                <p className="text-sm text-slate-500">Loading analytics...</p>
+              ) : adminStats ? (
+                <>
+                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
+                    <div className="bg-white dark:bg-[#181720] p-4 rounded-2xl border border-slate-200 dark:border-slate-800">
+                      <p className="text-xs text-slate-500">Logged-In Users (15m)</p>
+                      <p className="text-2xl font-bold mt-1 text-emerald-600 dark:text-emerald-400">{adminStats.loggedInUsers}</p>
+                    </div>
+                    <div className="bg-white dark:bg-[#181720] p-4 rounded-2xl border border-slate-200 dark:border-slate-800">
+                      <p className="text-xs text-slate-500">Registered Accounts</p>
+                      <p className="text-2xl font-bold mt-1">{adminStats.totalUsers}</p>
+                    </div>
+                    <div className="bg-white dark:bg-[#181720] p-4 rounded-2xl border border-slate-200 dark:border-slate-800">
+                      <p className="text-xs text-slate-500">Total Books</p>
+                      <p className="text-2xl font-bold mt-1">{adminStats.totalBooks}</p>
+                    </div>
+                    <div className="bg-white dark:bg-[#181720] p-4 rounded-2xl border border-slate-200 dark:border-slate-800">
+                      <p className="text-xs text-slate-500">Total Downloads</p>
+                      <p className="text-2xl font-bold mt-1">{adminStats.totalDownloads}</p>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                    <div className="bg-white dark:bg-[#181720] p-4 rounded-2xl border border-slate-200 dark:border-slate-800">
+                      <h2 className="text-xs font-bold uppercase tracking-wide text-slate-500 mb-2">Most Viewed Book</h2>
+                      {adminStats.mostViewedBook ? (
+                        <div className="text-xs space-y-1">
+                          <p className="font-bold text-sm">{adminStats.mostViewedBook.title}</p>
+                          <p className="text-slate-500">By {adminStats.mostViewedBook.author}</p>
+                          <p className="font-semibold text-[#5B46E8] dark:text-[#A99BFF] pt-1">
+                            Views: {adminStats.mostViewedBook.view_count}
+                          </p>
+                        </div>
+                      ) : (
+                        <p className="text-xs text-slate-500">No views yet.</p>
+                      )}
+                    </div>
+
+                    <div className="bg-white dark:bg-[#181720] p-4 rounded-2xl border border-slate-200 dark:border-slate-800">
+                      <h2 className="text-xs font-bold uppercase tracking-wide text-slate-500 mb-2">Most Downloaded Book</h2>
+                      {adminStats.mostDownloadedBook ? (
+                        <div className="text-xs space-y-1">
+                          <p className="font-bold text-sm">{adminStats.mostDownloadedBook.title}</p>
+                          <p className="text-slate-500">By {adminStats.mostDownloadedBook.author}</p>
+                          <p className="font-semibold text-emerald-600 dark:text-emerald-400 pt-1">
+                            Downloads: {adminStats.mostDownloadedBook.download_count}
+                          </p>
+                        </div>
+                      ) : (
+                        <p className="text-xs text-slate-500">No downloads yet.</p>
+                      )}
+                    </div>
+
+                    <div className="bg-white dark:bg-[#181720] p-4 rounded-2xl border border-slate-200 dark:border-slate-800">
+                      <h2 className="text-xs font-bold uppercase tracking-wide text-slate-500 mb-2">Most Saved Book</h2>
+                      {adminStats.mostSavedBook ? (
+                        <div className="text-xs space-y-1">
+                          <p className="font-bold text-sm">{adminStats.mostSavedBook.title}</p>
+                          <p className="text-slate-500">By {adminStats.mostSavedBook.author}</p>
+                          <p className="font-semibold text-amber-600 dark:text-amber-400 pt-1">
+                            Saved to Library: {adminStats.mostSavedBook.save_count}
+                          </p>
+                        </div>
+                      ) : (
+                        <p className="text-xs text-slate-500">No saves yet.</p>
+                      )}
+                    </div>
+                  </div>
+
+                  <div className="bg-white dark:bg-[#181720] p-5 rounded-2xl border border-slate-200 dark:border-slate-800">
+                    <h2 className="text-sm font-bold mb-3">Most Popular Books (Views + Downloads + Saves)</h2>
+                    <div className="space-y-2">
+                      {adminStats.popularBooks?.map((b, i) => (
+                        <div key={b.id} className="flex items-center justify-between gap-2 p-2.5 rounded-xl bg-slate-50 dark:bg-[#23222E] text-xs">
+                          <div className="min-w-0">
+                            <p className="font-semibold truncate">#{i + 1} {b.title}</p>
+                            <p className="text-slate-500 truncate">
+                              {b.view_count} views • {b.download_count} downloads • {b.save_count} saved
+                            </p>
+                          </div>
+                          <span className="px-2.5 py-0.5 rounded-full bg-[#EAE7F8] dark:bg-[#27233B] text-[#4C38D6] dark:text-[#B4A7FF] font-semibold shrink-0">
+                            Score: {b.popularity_score}
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+
+                  <div className="bg-white dark:bg-[#181720] p-5 rounded-2xl border border-slate-200 dark:border-slate-800">
+                    <h2 className="text-sm font-bold mb-3">Books by Category</h2>
+                    <div className="flex flex-wrap gap-2">
+                      {adminStats.categories?.map((c) => (
+                        <span key={c.category} className="px-3 py-1.5 rounded-xl bg-slate-100 dark:bg-[#23222E] text-xs font-medium">
+                          {c.category}: <strong>{c.count}</strong>
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                </>
+              ) : null}
+
+              {isAdmin && (
+                <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                  <form onSubmit={handleAdminAddBook} className="bg-white dark:bg-[#181720] p-5 rounded-2xl border border-slate-200 dark:border-slate-800 space-y-3">
+                    <h2 className="text-sm font-bold flex items-center gap-1.5">
+                      <Plus className="w-4 h-4 text-[#5B46E8]" />
+                      <span>Add Book to Catalog</span>
+                    </h2>
+                    <input
+                      type="text"
+                      value={newBookTitle}
+                      onChange={(e) => setNewBookTitle(e.target.value)}
+                      placeholder="Book title"
+                      className="w-full px-3 py-2 rounded-xl bg-slate-100 dark:bg-[#23222E] text-xs"
+                      required
+                    />
+                    <input
+                      type="text"
+                      value={newBookAuthor}
+                      onChange={(e) => setNewBookAuthor(e.target.value)}
+                      placeholder="Author name"
+                      className="w-full px-3 py-2 rounded-xl bg-slate-100 dark:bg-[#23222E] text-xs"
+                      required
+                    />
+                    <select
+                      value={newBookCategory}
+                      onChange={(e) => setNewBookCategory(e.target.value)}
+                      className="w-full px-3 py-2 rounded-xl bg-slate-100 dark:bg-[#23222E] text-xs"
+                    >
+                      {CATEGORIES.filter((c) => c !== 'All').map((c) => (
+                        <option key={c} value={c}>{c}</option>
+                      ))}
+                    </select>
+                    <textarea
+                      rows={2}
+                      value={newBookDesc}
+                      onChange={(e) => setNewBookDesc(e.target.value)}
+                      placeholder="Short description"
+                      className="w-full px-3 py-2 rounded-xl bg-slate-100 dark:bg-[#23222E] text-xs"
+                    />
+                    <button type="submit" className="px-4 py-2 rounded-xl bg-[#5B46E8] text-white text-xs font-semibold">
+                      Save Book
+                    </button>
+                  </form>
+
+                  <div className="bg-white dark:bg-[#181720] p-5 rounded-2xl border border-slate-200 dark:border-slate-800">
+                    <h2 className="text-sm font-bold mb-3">Recent Catalog Entries</h2>
+                    <div className="space-y-2 max-h-72 overflow-y-auto pr-1">
+                      {books.slice(-12).reverse().map((b) => (
+                        <div key={b.id} className="flex items-center justify-between gap-2 p-2.5 rounded-xl bg-slate-50 dark:bg-[#23222E] text-xs">
+                          <div className="min-w-0">
+                            <p className="font-semibold truncate">#{b.id} — {b.title}</p>
+                            <p className="text-slate-500 truncate">{b.author} • {b.category}</p>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => handleAdminDeleteBook(b.id)}
+                            title="Delete book"
+                            className="p-1.5 rounded-lg text-red-500 hover:bg-red-50 dark:hover:bg-red-950/40 shrink-0"
+                          >
+                            <Trash2 className="w-4 h-4" />
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
+          ) : activeTab === 'ai' ? (
+            <div className="max-w-3xl bg-white dark:bg-[#181720] rounded-2xl border border-slate-200 dark:border-slate-800 p-6 shadow-sm">
+              <div className="h-96 overflow-y-auto space-y-4 mb-4 pr-2">
+                {aiMessages.map((msg, idx) => (
+                  <div key={idx} className={`flex flex-col ${msg.sender === 'user' ? 'items-end' : 'items-start'}`}>
+                    <div className={`max-w-lg px-4 py-2.5 rounded-2xl text-sm ${msg.sender === 'user' ? 'bg-[#5B46E8] text-white' : 'bg-slate-100 dark:bg-[#23222E]'}`}>
+                      {msg.text}
+                    </div>
+                    {msg.toolsUsed?.length > 0 && (
+                      <p className="text-[10px] text-slate-400 mt-1">
+                        Tools executed: {msg.toolsUsed.join(' -> ')}
+                      </p>
+                    )}
+                    {msg.pendingSaveBook && (
+                      <div className="mt-2 flex items-center gap-2">
+                        <button
+                          type="button"
+                          onClick={() => handleConfirmAiSave(msg.pendingSaveBook, idx)}
+                          className="px-3 py-1.5 rounded-xl bg-emerald-600 text-white text-xs font-semibold"
+                        >
+                          Confirm Save &ldquo;{msg.pendingSaveBook.title}&rdquo; to My Library
+                        </button>
+                      </div>
+                    )}
+                    {msg.books?.length > 0 && (
+                      <div className="mt-2 grid grid-cols-1 sm:grid-cols-2 gap-2 w-full max-w-lg">
+                        {msg.books.map((b) => (
+                          <div key={b.id} onClick={() => handleOpenBookDetails(b)} className="p-2.5 rounded-xl bg-slate-50 dark:bg-[#1E1D27] border border-slate-200 dark:border-slate-800 text-xs cursor-pointer">
+                            <p className="font-semibold truncate">{b.title}</p>
+                            <p className="text-slate-500 truncate">{b.author}</p>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                ))}
+                {aiLoading && <p className="text-xs text-slate-400">AI agent is running tools...</p>}
+              </div>
+              <form onSubmit={handleSendAi} className="flex gap-2">
+                <input
+                  type="text"
+                  value={aiInput}
+                  onChange={(e) => setAiInput(e.target.value)}
+                  placeholder="Ask to recommend, compare, or save a book to My Library..."
+                  className="flex-1 px-4 py-2.5 rounded-xl bg-slate-100 dark:bg-[#23222E] text-sm focus:outline-none"
+                />
+                <button type="submit" className="px-4 py-2.5 rounded-xl bg-[#5B46E8] text-white">
+                  <Send className="w-4 h-4" />
+                </button>
+              </form>
+            </div>
+          ) : (
+            <>
+              <div className="flex flex-wrap items-center gap-2 mb-7">
+                {CATEGORIES.map((cat) => (
+                  <button
+                    key={cat}
+                    onClick={() => setSelectedCategory(cat)}
+                    className={`px-4 py-1.5 rounded-full text-xs font-medium transition-all ${
+                      selectedCategory === cat ? 'bg-[#5B46E8] text-white shadow-sm' : 'bg-white dark:bg-[#1C1B24] border border-slate-200 dark:border-slate-800'
+                    }`}
+                  >
+                    {cat}
+                  </button>
+                ))}
+              </div>
+
+              {loading ? (
+                <p className="text-sm text-slate-500">Loading library catalog...</p>
+              ) : displayedBooks.length === 0 ? (
+                <div className="text-center py-16 bg-white dark:bg-[#181720] rounded-2xl border border-slate-200 dark:border-slate-800">
+                  <p className="text-slate-500 text-sm">No books found.</p>
+                </div>
+              ) : (
+                <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-5">
+                  {displayedBooks.map((book) => {
+                    const isSaved = savedIds.includes(book.id);
+                    const isDownloaded = downloadedIds.includes(book.id);
+
+                    return (
+                      <div key={book.id} className="bg-white dark:bg-[#181720] rounded-2xl border border-slate-200/80 dark:border-slate-800 p-4 flex flex-col justify-between shadow-xs">
+                        <div>
+                          <div onClick={() => handleOpenBookDetails(book)} className="aspect-[3/4] w-full rounded-xl overflow-hidden bg-slate-100 dark:bg-[#23222E] mb-3.5 cursor-pointer relative group">
+                            <img src={book.cover_url} alt={book.title} className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300" />
+                            <span className="absolute top-2.5 left-2.5 px-2.5 py-0.5 rounded-full text-[10px] font-semibold bg-[#5B46E8]/90 text-white">
+                              {book.category}
+                            </span>
+                          </div>
+                          <h3 onClick={() => handleOpenBookDetails(book)} className="font-semibold text-sm line-clamp-1 cursor-pointer hover:text-[#5B46E8]">{book.title}</h3>
+                          <p className="text-xs font-medium text-slate-500 dark:text-slate-400 mt-0.5">{book.author}</p>
+                          <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-2 mb-3 line-clamp-2 leading-relaxed">{book.description}</p>
+                        </div>
+                        <div className="flex items-center gap-2 pt-2 border-t border-slate-100 dark:border-slate-800">
+                          <button onClick={() => handleToggleSave(book.id)} className={`p-2 rounded-lg border ${isSaved ? 'bg-[#EAE7F8] border-[#5B46E8] text-[#5B46E8]' : 'border-slate-200 dark:border-slate-700'}`}>
+                            <Bookmark className="w-4 h-4" />
+                          </button>
+                          <button onClick={() => handleReadBook(book)} className="flex-1 py-1.5 px-3 rounded-lg border border-slate-200 dark:border-slate-700 text-xs font-medium">Read</button>
+                          <button onClick={() => handleDownloadBook(book)} className={`flex-1 py-1.5 px-3 rounded-lg text-xs font-medium text-white flex items-center justify-center gap-1 ${isDownloaded ? 'bg-emerald-600' : 'bg-[#5B46E8]'}`}>
+                            {isDownloaded ? <><CheckCircle2 className="w-3.5 h-3.5" /> Saved</> : 'Download'}
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </>
+          )}
+        </main>
+      </div>
+
+      {readingBook && currentChapter && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/55 p-4">
+          <div className="w-full max-w-3xl max-h-[88vh] flex flex-col bg-white dark:bg-[#1B1A24] rounded-2xl border border-slate-200 dark:border-slate-800 p-6 shadow-2xl">
+            <div className="flex items-start justify-between gap-4 pb-4 border-b border-slate-100 dark:border-slate-800">
+              <div>
+                <span className="inline-block px-2.5 py-0.5 rounded-full text-[11px] font-semibold bg-[#EAE7F8] dark:bg-[#27233B] text-[#5B46E8] mb-1.5">
+                  {readingBook.category} • Chapter {currentChapter.number} of {readerChapters.length}
+                </span>
+                <h2 className="text-lg font-bold leading-snug">{readingBook.title}</h2>
+                <p className="text-xs text-slate-500 mt-0.5">By {readingBook.author} • Original study & reference edition</p>
+              </div>
+              <button onClick={() => setReadingBook(null)} className="text-slate-400 hover:text-slate-600">
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="flex flex-wrap gap-1.5 py-3 border-b border-slate-100 dark:border-slate-800">
+              {readerChapters.map((ch, idx) => (
+                <button
+                  key={ch.number}
+                  type="button"
+                  onClick={() => setActiveChapterIdx(idx)}
+                  className={`px-3 py-1 rounded-lg text-xs font-medium transition-colors ${
+                    idx === activeChapterIdx
+                      ? 'bg-[#5B46E8] text-white'
+                      : 'bg-slate-100 dark:bg-[#252432] text-slate-600 dark:text-slate-300'
+                  }`}
+                >
+                  Ch. {ch.number}: {ch.title}
+                </button>
+              ))}
+            </div>
+
+            <div className="flex-1 overflow-y-auto py-5 pr-1 space-y-4">
+              <h3 className="text-base font-bold">
+                Chapter {currentChapter.number}: {currentChapter.title}
+              </h3>
+              {currentChapter.paragraphs.map((para, pIdx) => (
+                <p key={pIdx} className="text-sm text-slate-700 dark:text-slate-300 leading-relaxed">
+                  {para}
+                </p>
+              ))}
+            </div>
+
+            <div className="flex items-center justify-between gap-3 pt-4 border-t border-slate-100 dark:border-slate-800">
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  disabled={activeChapterIdx === 0}
+                  onClick={() => setActiveChapterIdx((prev) => Math.max(0, prev - 1))}
+                  className="flex items-center gap-1 px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-700 text-xs font-semibold disabled:opacity-40"
+                >
+                  <ChevronLeft className="w-4 h-4" />
+                  <span>Previous</span>
+                </button>
+                <button
+                  type="button"
+                  disabled={activeChapterIdx >= readerChapters.length - 1}
+                  onClick={() => setActiveChapterIdx((prev) => Math.min(readerChapters.length - 1, prev + 1))}
+                  className="flex items-center gap-1 px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-700 text-xs font-semibold disabled:opacity-40"
+                >
+                  <span>Next</span>
+                  <ChevronRight className="w-4 h-4" />
+                </button>
+              </div>
+              <button
+                type="button"
+                onClick={() => handleDownloadBook(readingBook)}
+                className="px-4 py-2 rounded-xl bg-[#5B46E8] text-white text-xs font-semibold flex items-center gap-1.5"
+              >
+                <Download className="w-3.5 h-3.5" />
+                <span>Download Full PDF</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {selectedBook && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+          <div className="w-full max-w-xl bg-white dark:bg-[#1B1A24] rounded-2xl border border-slate-200 dark:border-slate-800 p-6 shadow-2xl">
+            <div className="flex justify-between items-start gap-4">
+              <div className="flex gap-5">
+                <img src={selectedBook.cover_url} alt={selectedBook.title} className="w-28 h-40 object-cover rounded-xl shadow-md shrink-0 bg-slate-100" />
+                <div>
+                  <span className="inline-block px-2.5 py-0.5 rounded-full text-[11px] font-semibold bg-[#EAE7F8] dark:bg-[#27233B] text-[#5B46E8] mb-2">{selectedBook.category}</span>
+                  <h2 className="text-lg font-bold leading-snug">{selectedBook.title}</h2>
+                  <p className="text-xs font-medium text-slate-500 mt-1">By {selectedBook.author}</p>
+                  <p className="text-xs text-slate-600 dark:text-slate-300 mt-3 leading-relaxed">{selectedBook.description}</p>
+                </div>
+              </div>
+              <button onClick={() => setSelectedBook(null)} className="text-slate-400 hover:text-slate-600"><X className="w-5 h-5" /></button>
+            </div>
+            <div className="flex justify-end gap-3 mt-6 pt-4 border-t border-slate-100 dark:border-slate-800">
+              <button onClick={() => { const bookToRead = selectedBook; setSelectedBook(null); handleReadBook(bookToRead); }} className="px-4 py-2 rounded-xl border border-slate-200 dark:border-slate-700 text-xs font-semibold">Read Chapters</button>
+              <button onClick={() => { handleDownloadBook(selectedBook); setSelectedBook(null); }} className="px-5 py-2 rounded-xl bg-[#5B46E8] text-white text-xs font-semibold flex items-center gap-1.5">
+                <Download className="w-3.5 h-3.5" /><span>Download PDF</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showAuthModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+          <div className="w-full max-w-md bg-white dark:bg-[#1B1A24] rounded-2xl border border-slate-200 dark:border-slate-800 p-6 shadow-2xl">
+            <div className="flex items-center justify-between mb-4">
+              <div className="flex items-center gap-2 text-sm font-bold">
+                <Lock className="w-4 h-4 text-[#5B46E8]" />
+                <span>{authMode === 'login' ? 'Member Log In' : 'Create Member Account'}</span>
+              </div>
+              <button onClick={() => setShowAuthModal(false)} className="text-slate-400"><X className="w-4 h-4" /></button>
+            </div>
+            <div className="grid grid-cols-2 gap-1 p-1 rounded-xl bg-slate-100 dark:bg-[#252432] mb-4">
+              <button type="button" onClick={() => { setAuthMode('login'); setAuthError(''); }} className={`py-1.5 rounded-lg text-xs font-semibold ${authMode === 'login' ? 'bg-white dark:bg-[#1B1A24] text-[#5B46E8] shadow-xs' : 'text-slate-500'}`}>Log In</button>
+              <button type="button" onClick={() => { setAuthMode('register'); setAuthError(''); }} className={`py-1.5 rounded-lg text-xs font-semibold ${authMode === 'register' ? 'bg-white dark:bg-[#1B1A24] text-[#5B46E8] shadow-xs' : 'text-slate-500'}`}>Sign Up</button>
+            </div>
+            {authError && <div className="mb-4 p-3 rounded-xl bg-red-50 text-xs text-red-600">{authError}</div>}
+            <form onSubmit={handleAuthSubmit} className="space-y-3.5">
+              {authMode === 'register' && (
+                <div>
+                  <label className="block text-xs font-medium mb-1 text-slate-600 dark:text-slate-300">Name</label>
+                  <input type="text" value={fullName} onChange={(e) => setFullName(e.target.value)} placeholder="John Mark" className="w-full px-3 py-2 rounded-xl bg-slate-100 dark:bg-[#252432] text-xs focus:outline-none" required />
+                </div>
+              )}
+              <div>
+                <label className="block text-xs font-medium mb-1 text-slate-600 dark:text-slate-300">Email</label>
+                <input type="text" value={authUsername} onChange={(e) => setAuthUsername(e.target.value)} placeholder="example@gmail.com" className="w-full px-3 py-2 rounded-xl bg-slate-100 dark:bg-[#252432] text-xs focus:outline-none" required />
+              </div>
+              <div>
+                <label className="block text-xs font-medium mb-1 text-slate-600 dark:text-slate-300">Password</label>
+                <input type="password" value={authPassword} onChange={(e) => setAuthPassword(e.target.value)} placeholder="password123" className="w-full px-3 py-2 rounded-xl bg-slate-100 dark:bg-[#252432] text-xs focus:outline-none" required />
+              </div>
+              <div className="flex justify-end gap-2 pt-2">
+                <button type="button" onClick={() => setShowAuthModal(false)} className="px-4 py-2 rounded-xl border text-xs font-medium">Cancel</button>
+                <button type="submit" disabled={authLoading} className="px-5 py-2 rounded-xl bg-[#5B46E8] text-white text-xs font-semibold">
+                  {authLoading ? 'Please wait...' : authMode === 'login' ? 'Log In' : 'Create Account'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}

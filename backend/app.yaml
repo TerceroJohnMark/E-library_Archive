@@ -1,0 +1,29 @@
+kind: wasmer.io/App.v0
+name: elibrary-backend
+owner: '2320801'
+package: .
+app_id: da_2OPIqt7Upgx0
+capabilities:
+  database:
+    engine: postgres
+annotations:
+  anybuild.run/config:
+    commands:
+      start: node server.js
+    edgejs_enable: true
+    edgejs_precompile: true
+    name: out
+    node_install_inputs:
+    - package.json
+    node_package_manager: npm
+    node_package_name: backend
+    node_remove_native_binaries: true
+    node_server: express
+    npm_version: '11'
+    services:
+    - engine: postgres
+      name: database
+  anybuild.run/provider: node
+  anybuild.run/version: 0.33.3
+  wasmer.io/version: 7.5.0
+enableDatabase: true
